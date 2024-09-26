@@ -1,0 +1,15 @@
+streamlit
+openai
+PyPDF2
+python-docx
+toml
+pymupdf
+google-cloud-vision
+streamlit_option_menu
+PyYAML
+PyGithub
+streamlit-authenticator
+streamlit_modal
+pillow_heif
+pdf2image
+psutil
