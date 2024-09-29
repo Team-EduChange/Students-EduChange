@@ -4,7 +4,7 @@ import asyncio
 import streamlit as st
 from PIL import Image
 from io import BytesIO
-from datetime import datetime, timedelta
+from datetime import datetime
 import pillow_heif
 from utilities.ui_components import button_style_2
 from pdf2image import convert_from_bytes
@@ -12,12 +12,12 @@ from utilities.process_utils import extract_text_from_pdf, convert_image_to_pdf_
 from utilities.common_utils import go_back, request_chat_completion, deduct_credit
 from utilities.github_utils import save_student_text_data_to_github, get_submission_count, update_submission_count, load_user_database
 from utilities.logger import log_credit_transaction
+import threading
 
 LOCK_FILE = 'submission_lock.lock'
 PREVIEW_COUNT_FILE = 'preview_count.txt'
 PREVIEW_LOCK_FILE = 'preview_lock.lock'
 MAX_PREVIEW_USERS = 10  # Maximum number of simultaneous users
-INACTIVITY_TIMEOUT = timedelta(minutes=5)  # Timeout for inactivity
 
 # Initialize preview slots to avoid issues when starting the server
 def initialize_preview_slots():
@@ -29,6 +29,34 @@ def initialize_preview_slots():
 
 # Initialize the preview slots when starting the application
 initialize_preview_slots()
+
+# Reset preview slots every 5 minutes
+async def reset_preview_slots():
+    while True:
+        await asyncio.sleep(300)  # Wait for 5 minutes (300 seconds)
+        try:
+            fd = os.open(PREVIEW_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)  # Acquire lock to reset the count
+            try:
+                # Reset the preview count to 0
+                with open(PREVIEW_COUNT_FILE, 'w') as f:
+                    f.write('0')
+                print("Preview slots reset to 0")
+            finally:
+                os.close(fd)
+                os.remove(PREVIEW_LOCK_FILE)
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                print(f"Error resetting preview slots: {e}")  # Only print error if it's not a lock existence issue
+
+# Start the reset preview slots task
+def start_reset_preview_slots_task():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(reset_preview_slots())
+
+# Run the reset task in a separate thread
+reset_thread = threading.Thread(target=start_reset_preview_slots_task, daemon=True)
+reset_thread.start()
 
 # Acquire lock for critical sections
 async def acquire_lock(lock_file):
@@ -104,27 +132,6 @@ async def release_preview_slot():
         else:
             raise
 
-# JavaScript snippet to handle heartbeat
-def add_heartbeat_script():
-    """
-    Add JavaScript code to send a heartbeat to the server periodically to confirm the user is still active.
-    """
-    st.markdown("""
-        <script>
-            function sendHeartbeat() {
-                fetch('/heartbeat', { method: 'POST' })
-                .then(response => response.json())
-                .then(data => {
-                    console.log('Heartbeat sent:', data);
-                })
-                .catch(error => {
-                    console.error('Error sending heartbeat:', error);
-                });
-            }
-            setInterval(sendHeartbeat, 30000);  // Send a heartbeat every 30 seconds
-        </script>
-    """, unsafe_allow_html=True)
-
 # Process uploaded files (image/PDF preview)
 async def process_upload(uploaded_file):
     file_type = uploaded_file.type
@@ -161,18 +168,6 @@ async def upload_text_detailed_page():
             return
         else:
             st.session_state['preview_slot_acquired'] = True
-            st.session_state['last_activity'] = datetime.now()  # Track the last activity time
-
-    # Add script to handle page heartbeat
-    add_heartbeat_script()
-
-    # Periodically check for inactivity
-    if 'last_activity' in st.session_state:
-        if datetime.now() - st.session_state['last_activity'] > INACTIVITY_TIMEOUT:
-            st.warning("5분 이상 활동이 없어서 자동으로 슬롯이 해제되었습니다.")
-            await release_preview_slot()
-            st.session_state['preview_slot_acquired'] = False
-            return
 
     st.header("결과물 제출하기")
     st.markdown("---")
@@ -196,7 +191,6 @@ async def upload_text_detailed_page():
     if uploaded_files:
         tasks = [process_upload(file) for file in uploaded_files]
         await asyncio.gather(*tasks)  # Process uploaded files concurrently
-        st.session_state['last_activity'] = datetime.now()  # Update activity timestamp
 
     submission_message = None 
     error_message = None
@@ -211,7 +205,6 @@ async def upload_text_detailed_page():
             go_back()
     with col2:
         if st.button("제출하기"):
-            st.session_state['last_activity'] = datetime.now()  # Update activity timestamp
             if not await acquire_lock(LOCK_FILE):
                 error_message = "현재 제출자가 많아 잠시후 다시 제출하길 바랍니다."
             else:
