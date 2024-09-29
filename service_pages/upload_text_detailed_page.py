@@ -33,7 +33,7 @@ initialize_preview_slots()
 # Reset preview slots every 5 minutes
 async def reset_preview_slots():
     while True:
-        await asyncio.sleep(300)  # Wait for 5 minutes (300 seconds)
+        await asyncio.sleep(200)  # Wait for 5 minutes (200 seconds)
         try:
             fd = os.open(PREVIEW_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)  # Acquire lock to reset the count
             try:
